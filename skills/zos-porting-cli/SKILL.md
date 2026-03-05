@@ -14,6 +14,10 @@ Use this skill for end-to-end zopen porting work with local `zopen-*` commands.
 3. Prefer Homebrew formula metadata and upstream project metadata first; use web search only as fallback.
 4. Do not create files in `patches/` until build succeeds.
 
+## CRITICAL: Continuous Skill Improvement
+
+**If the user provides a course correction, tip, or alternative approach that successfully resolves an issue, you MUST update this `SKILL.md` file in the `https://github.com/IgorTodorovskiIBM/zos-porting` repository.** This ensures the skill evolves and prevents future agents from repeating the same mistakes. Treat this as a core mandate of the porting workflow.
+
 ## Preflight
 
 Run:
@@ -87,6 +91,10 @@ zopen-generate \
 Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
+<<<<<<< HEAD
+=======
+- **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
+>>>>>>> 2ecee5e (Update SKILL.md)
 
 ### 4. Build and Iterate
 
@@ -101,10 +109,53 @@ If build fails:
 3. modify source or `buildenv`
 4. rerun `zopen-build -v`
 
+#### Handling Patch Conflicts
+
+When patches fail to apply cleanly (common with line ending or format issues on z/OS):
+
+1. **Force apply patches to generate rejection files**:
+```bash
+zopen-build -v --forcepatchapply
+```
+This applies patches where possible and creates `.rej` files for rejected hunks.
+
+2. **Manually resolve conflicts**:
+   - Locate `.rej` files in the extracted source directory
+   - Apply rejected changes manually to the corresponding source files
+   - Use the `.rej` file content as a guide for what needs to be changed
+
+3. **Create corrected patches**:
+```bash
+cd <extracted-source-dir>
+git diff HEAD > ../patches/PR1.patch
+```
+
+4. **Clean and rebuild**:
+```bash
+cd ..
+zopen-build -v --clean
+zopen-build -v
+```
+
+**Note**: The `--forcepatchapply` flag is specifically designed for patch conflict scenarios. It allows the build to continue while marking problematic hunks for manual resolution.
+
 Common fixes:
 - missing configure: set `ZOPEN_BOOTSTRAP` or `ZOPEN_CONFIGURE="skip"`
 - missing macros/functions: add `-D__XPLAT` in `ZOPEN_EXTRA_CPPFLAGS`, rebuild with `-f` if needed
 - platform differences: guard with `#ifdef __MVS__`
+<<<<<<< HEAD
+=======
+- **u_int*_t typedef conflicts**: Add `#ifndef __MVS__` guards around `u_int8_t`, `u_int16_t`, `u_int64_t` typedefs (z/OS uses standard `uint*_t` types).
+- **Missing symbols in `.so` (CRITICAL for extensions)**: 
+  1. Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` in `buildenv`
+  2. Patch header files: change `#define API_MACRO` to `#define API_MACRO __attribute__((visibility("default")))` for non-Windows platforms
+  3. For template headers (`.h.tmpl`), add platform check: `#ifndef _WIN32 ... #else ... __attribute__((visibility("default"))) ... #endif`
+- **Read-only `/usr/local` errors**: 
+  1. Use `ZOPEN_EXTRA_MAKE_OPTS` to override install paths: `export ZOPEN_EXTRA_MAKE_OPTS="INSTALL_LIB_DIR=\${ZOPEN_INSTALL_DIR}/lib INSTALL_INCLUDE_DIR=\${ZOPEN_INSTALL_DIR}/include"`
+  2. Set `ZOPEN_INSTALL_OPTS="install \${ZOPEN_EXTRA_MAKE_OPTS}"` to ensure overrides are passed to `make install`
+  3. Patch Makefile to use `?=` instead of `=` for install directory variables (e.g., `INSTALL_LIB_DIR ?= /usr/local/lib`)
+- **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
+>>>>>>> 2ecee5e (Update SKILL.md)
 
 ### 5. Finalize After Success
 
