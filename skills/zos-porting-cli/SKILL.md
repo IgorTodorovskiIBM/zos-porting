@@ -56,6 +56,7 @@ Rules:
 1. Map each required brew dependency to exact zopen package name.
 2. Keep required dependencies only.
 3. If required dependency is unavailable in zopen package list, fail and explain.
+4. **Always add `coreutils`** if the project uses `make install` and the system `install` is insufficient.
 
 Special cases:
 - use `check_python` (not `python`)
@@ -87,6 +88,7 @@ zopen-generate \
 Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
+- **Sanitize `buildenv` variables**: Ensure all custom variables use underscores instead of hyphens (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`).
 
 ### 4. Build and Iterate
 
@@ -105,6 +107,9 @@ Common fixes:
 - missing configure: set `ZOPEN_BOOTSTRAP` or `ZOPEN_CONFIGURE="skip"`
 - missing macros/functions: add `-D__XPLAT` in `ZOPEN_EXTRA_CPPFLAGS`, rebuild with `-f` if needed
 - platform differences: guard with `#ifdef __MVS__`
+- **Missing symbols in `.so`**: Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` or patch headers with `__attribute__((visibility("default")))`.
+- **Read-only `/usr/local` errors**: Use `ZOPEN_EXTRA_MAKE_OPTS` to override install paths (e.g., `export ZOPEN_EXTRA_MAKE_OPTS="INSTALL_LIB_DIR=\${ZOPEN_INSTALL_DIR}/lib"`).
+- **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
 
 ### 5. Finalize After Success
 
@@ -128,8 +133,10 @@ bump check buildenv
 echo "" >> .gitignore
 echo "# Ignore source directories created by zopen-build" >> .gitignore
 echo "<package-name>-*/" >> .gitignore
+echo "<package-name>/" >> .gitignore
 ```
-6. Document changes in `patches/README.md`.
+6. **NEVER check in the extracted source directory.** Verify with `git status` before committing.
+7. Document changes in `patches/README.md`.
 
 ## Optional Repo/CI
 
@@ -140,7 +147,7 @@ Only for users with required org permissions.
 zopen-create-repo --help
 zopen-create-repo -n <name> -d "zopen port of <name>"
 ```
-Requires `gh` and `GITHUB_TOKEN`/`--github-token`.
+Fallback for token issues: `unset GITHUB_TOKEN; gh repo create zopencommunity/<name>port --public --description "..."`.
 
 2. Push using SSH remote:
 ```bash
