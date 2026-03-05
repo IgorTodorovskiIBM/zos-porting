@@ -91,10 +91,7 @@ zopen-generate \
 Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
-<<<<<<< HEAD
-=======
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
->>>>>>> 2ecee5e (Update SKILL.md)
 
 ### 4. Build and Iterate
 
@@ -113,6 +110,23 @@ If build fails:
 
 When patches fail to apply cleanly (common with line ending or format issues on z/OS):
 
+**Best Practice: Individual File Resolution**
+1. **Fix conflict locally**: Manually resolve the conflict in the extracted source file. Ensure the fix is correct for z/OS.
+2. **Create replacement patch**:
+   ```bash
+   cd <extracted-source-dir>
+   git add <file>
+   git diff HEAD -- <file> > ../patches/<file>.patch
+   ```
+3. **Reset and Reapply**:
+   ```bash
+   git reset --hard
+   cd ..
+   zopen-build -v
+   ```
+   This ensures that the build starts from a clean state with your corrected patch correctly applied by `zopen-build`.
+
+**Alternative: Force Apply**
 1. **Force apply patches to generate rejection files**:
 ```bash
 zopen-build -v --forcepatchapply
@@ -137,14 +151,10 @@ zopen-build -v --clean
 zopen-build -v
 ```
 
-**Note**: The `--forcepatchapply` flag is specifically designed for patch conflict scenarios. It allows the build to continue while marking problematic hunks for manual resolution.
-
 Common fixes:
 - missing configure: set `ZOPEN_BOOTSTRAP` or `ZOPEN_CONFIGURE="skip"`
 - missing macros/functions: add `-D__XPLAT` in `ZOPEN_EXTRA_CPPFLAGS`, rebuild with `-f` if needed
 - platform differences: guard with `#ifdef __MVS__`
-<<<<<<< HEAD
-=======
 - **u_int*_t typedef conflicts**: Add `#ifndef __MVS__` guards around `u_int8_t`, `u_int16_t`, `u_int64_t` typedefs (z/OS uses standard `uint*_t` types).
 - **Missing symbols in `.so` (CRITICAL for extensions)**: 
   1. Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` in `buildenv`
@@ -155,7 +165,9 @@ Common fixes:
   2. Set `ZOPEN_INSTALL_OPTS="install \${ZOPEN_EXTRA_MAKE_OPTS}"` to ensure overrides are passed to `make install`
   3. Patch Makefile to use `?=` instead of `=` for install directory variables (e.g., `INSTALL_LIB_DIR ?= /usr/local/lib`)
 - **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
->>>>>>> 2ecee5e (Update SKILL.md)
+- **posix_memalign missing declaration**: Ensure `#define _XOPEN_SOURCE 600` is at the VERY TOP of the C file, before any includes.
+- **thread_local support**: z/OS Clang may not support `thread_local`. Use thread-specific storage or remove if safe.
+- **poll() conflicts**: `#define __poll 1` in `poll.h` can conflict with variables named `__poll`. `#undef __poll` after including `<poll.h>` on z/OS.
 
 ### 5. Finalize After Success
 
