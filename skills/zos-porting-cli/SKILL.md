@@ -13,6 +13,7 @@ Use this skill for end-to-end zopen porting work with local `zopen-*` commands.
 2. Use `--help` as source of truth for flags/syntax in installed tooling.
 3. Prefer Homebrew formula metadata and upstream project metadata first; use web search only as fallback.
 4. Do not create files in `patches/` until build succeeds.
+5. **Always run `zopen-build` in foreground with appropriate timeout, never as background process.** This ensures proper error capture and debugging.
 
 ## CRITICAL: Continuous Skill Improvement
 
@@ -66,6 +67,7 @@ Special cases:
 - use `check_go` (not `go`)
 - if `flex` is required, add `m4` before `flex`
 - if `cmake` is required, add `make`
+- if configure fails with "requires GNU bison", add `bison` to `ZOPEN_STABLE_DEPS`
 
 ### 3. Generate Project
 
@@ -91,6 +93,7 @@ zopen-generate \
 Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
+- **CRITICAL: `ZOPEN_STABLE_URL` must point to actual release tarball** (e.g., `https://github.com/org/project/releases/download/vX.Y.Z/project-X.Y.Z.tar.gz`), **NOT GitHub API endpoints** (e.g., `https://api.github.com/repos/org/project/tarball/vX.Y.Z`). API endpoints return different archive formats that may cause extraction issues.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
 
 ### 4. Build and Iterate
@@ -99,6 +102,8 @@ Notes:
 cd <name>port
 zopen-build -v
 ```
+
+**CRITICAL: Always run `zopen-build` in foreground with appropriate timeout (e.g., 300s for typical builds, longer for complex projects). Never use background processes.** This ensures proper error capture and allows immediate debugging of build failures.
 
 If build fails:
 1. inspect latest `log.STABLE`/`log.DEV`
