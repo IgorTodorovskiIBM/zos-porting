@@ -61,6 +61,7 @@ Rules:
 1. Map each required brew dependency to exact zopen package name.
 2. Keep required dependencies only.
 3. If required dependency is unavailable in zopen package list, fail and explain.
+4. **Always add `coreutils`** if the project uses `make install` and the system `install` is insufficient.
 
 Special cases:
 - use `check_python` (not `python`)
@@ -94,21 +95,11 @@ zopen-generate \
 Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
-- **CRITICAL: `ZOPEN_STABLE_URL` must point to actual release tarball** (e.g., `https://github.com/org/project/releases/download/vX.Y.Z/project-X.Y.Z.tar.gz`), **NOT GitHub API endpoints** (e.g., `https://api.github.com/repos/org/project/tarball/vX.Y.Z`). API endpoints return different archive formats that may cause extraction issues.
-- **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) in `--stable-url` rather than a tarball URL. This is appropriate for projects that require git history or submodules.
+- **Sanitize `buildenv` variables**: Ensure all custom variables use underscores instead of hyphens (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`).
+- **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) rather than a tarball URL unless absolutely necessary. This is appropriate for projects that require git history or submodules.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
-<<<<<<< skill-update/zos-porting-cli/20260323-123933
 - **For CMake projects**: Always reference existing working examples like `github.com/zopencommunity/llamacppport/blob/main/buildenv` before starting.
-=======
 - **Dependency Home Variables**: `zopen-build` automatically provides the root directory of each dependency as an environment variable named `<DEPNAME>_HOME` (e.g., `BLIS_HOME`, `ZOSLIB_HOME`). Reference these in `buildenv` as `\${DEPNAME_HOME}` to ensure they are evaluated correctly during the build process.
-- **For CMake projects**: Always reference existing working examples like `llamacppport` or `stablediffusionport` before starting.
->>>>>>> main
-- **CMake configure pattern**: Use "." at end of `ZOPEN_CONFIGURE_OPTS` to specify source directory.
-- **For header-only CMake libraries**: 
-  - Use `ZOPEN_MAKE="skip"` since no compilation is needed
-  - `ZOPEN_CONFIGURE_OPTS` should end with "."
-  - `ZOPEN_INSTALL_OPTS` should be "--install ."
-- **CMake Build Variables**: CMake build systems do not accept environment variable assignments (like `CC=clang`) as direct arguments to the `cmake --build` command. Pass these during the configure step or via the environment before running the build command.
 
 ### 4. Build and Iterate
 
@@ -174,6 +165,9 @@ Common fixes:
 - missing configure: set `ZOPEN_BOOTSTRAP` or `ZOPEN_CONFIGURE="skip"`
 - missing macros/functions: add `-D__XPLAT` in `ZOPEN_EXTRA_CPPFLAGS`, rebuild with `-f` if needed
 - platform differences: guard with `#ifdef __MVS__`
+- **Missing symbols in `.so`**: Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` or patch headers with `__attribute__((visibility("default")))`.
+- **Read-only `/usr/local` errors**: Use `ZOPEN_EXTRA_MAKE_OPTS` to override install paths (e.g., `export ZOPEN_EXTRA_MAKE_OPTS="INSTALL_LIB_DIR=\${ZOPEN_INSTALL_DIR}/lib"`).
+- **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
 - **u_int*_t typedef conflicts**: Add `#ifndef __MVS__` guards around `u_int8_t`, `u_int16_t`, `u_int64_t` typedefs (z/OS uses standard `uint*_t` types).
 - **Missing symbols in `.so` (CRITICAL for extensions)**: 
   1. Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` in `buildenv`
@@ -216,8 +210,10 @@ bump check buildenv
 echo "" >> .gitignore
 echo "# Ignore source directories created by zopen-build" >> .gitignore
 echo "<package-name>-*/" >> .gitignore
+echo "<package-name>/" >> .gitignore
 ```
-6. Document changes in `patches/README.md`.
+6. **NEVER check in the extracted source directory.** Verify with `git status` before committing.
+7. Document changes in `patches/README.md`.
 
 ## Optional Repo/CI
 
@@ -228,7 +224,7 @@ Only for users with required org permissions.
 zopen-create-repo --help
 zopen-create-repo -n <name> -d "zopen port of <name>"
 ```
-Requires `gh` and `GITHUB_TOKEN`/`--github-token`.
+Fallback for token issues: `unset GITHUB_TOKEN; gh repo create zopencommunity/<name>port --public --description "..."`.
 
 2. Push using SSH remote:
 ```bash
