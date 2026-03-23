@@ -1,6 +1,6 @@
 ---
 name: zos-porting-cli
-description: Use this skill when porting open-source software to z/OS with zopen CLI commands. It provides a command-first workflow for metadata collection, dependency mapping to exact zopen package names, project generation, build/fix iteration, patch creation, bump validation, and optional repo/CI setup.
+description: Load before starting any zporting work. Contains required procedures, known gotchas, and build patterns for zopen ports. It provides a command-first workflow for metadata collection, dependency mapping to exact zopen package names, project generation, build/fix iteration, patch creation, bump validation, and optional repo/CI setup.
 ---
 
 # z/OS Porting (CLI-First)
@@ -13,6 +13,11 @@ Use this skill for end-to-end zopen porting work with local `zopen-*` commands.
 2. Use `--help` as source of truth for flags/syntax in installed tooling.
 3. Prefer Homebrew formula metadata and upstream project metadata first; use web search only as fallback.
 4. Do not create files in `patches/` until build succeeds.
+5. **Always run `zopen-build` in foreground with appropriate timeout, never as background process.** This ensures proper error capture and debugging.
+
+## CRITICAL: Continuous Skill Improvement
+
+**If the user provides a course correction, tip, or alternative approach that successfully resolves an issue, you MUST update this `SKILL.md` file in the `https://github.com/IgorTodorovskiIBM/zos-porting` repository.** This ensures the skill evolves and prevents future agents from repeating the same mistakes. Treat this as a core mandate of the porting workflow.
 
 ## Preflight
 
@@ -63,6 +68,8 @@ Special cases:
 - use `check_go` (not `go`)
 - if `flex` is required, add `m4` before `flex`
 - if `cmake` is required, add `make`
+- if configure fails with "requires GNU bison", add `bison` to `ZOPEN_STABLE_DEPS`
+- if build fails with "envsubst: FSUM7351 not found", add `gettext` to `ZOPEN_STABLE_DEPS` (envsubst is provided by gettext and is commonly used in Makefiles for template variable substitution)
 
 ### 3. Generate Project
 
@@ -89,6 +96,10 @@ Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
 - **Sanitize `buildenv` variables**: Ensure all custom variables use underscores instead of hyphens (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`).
+- **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) rather than a tarball URL unless absolutely necessary. This is appropriate for projects that require git history or submodules.
+- **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
+- **For CMake projects**: Always reference existing working examples like `github.com/zopencommunity/llamacppport/blob/main/buildenv` before starting.
+- **Dependency Home Variables**: `zopen-build` automatically provides the root directory of each dependency as an environment variable named `<DEPNAME>_HOME` (e.g., `BLIS_HOME`, `ZOSLIB_HOME`). Reference these in `buildenv` as `\${DEPNAME_HOME}` to ensure they are evaluated correctly during the build process.
 
 ### 4. Build and Iterate
 
@@ -97,11 +108,58 @@ cd <name>port
 zopen-build -v
 ```
 
+**CRITICAL: Always run `zopen-build` in foreground with appropriate timeout (e.g., 300s for typical builds, longer for complex projects). Never use background processes.** This ensures proper error capture and allows immediate debugging of build failures.
+
 If build fails:
 1. inspect latest `log.STABLE`/`log.DEV`
 2. identify root cause
 3. modify source or `buildenv`
 4. rerun `zopen-build -v`
+
+#### Handling Patch Conflicts
+
+When patches fail to apply cleanly (common with line ending or format issues on z/OS):
+
+**Best Practice: Individual File Resolution**
+1. **Fix conflict locally**: Manually resolve the conflict in the extracted source file. Ensure the fix is correct for z/OS.
+2. **Create replacement patch**:
+   ```bash
+   cd <extracted-source-dir>
+   git add <file>
+   git diff HEAD -- <file> > ../patches/<file>.patch
+   ```
+3. **Reset and Reapply**:
+   ```bash
+   git reset --hard
+   cd ..
+   zopen-build -v
+   ```
+   This ensures that the build starts from a clean state with your corrected patch correctly applied by `zopen-build`.
+
+**Alternative: Force Apply**
+1. **Force apply patches to generate rejection files**:
+```bash
+zopen-build -v --forcepatchapply
+```
+This applies patches where possible and creates `.rej` files for rejected hunks.
+
+2. **Manually resolve conflicts**:
+   - Locate `.rej` files in the extracted source directory
+   - Apply rejected changes manually to the corresponding source files
+   - Use the `.rej` file content as a guide for what needs to be changed
+
+3. **Create corrected patches**:
+```bash
+cd <extracted-source-dir>
+git diff HEAD > ../patches/PR1.patch
+```
+
+4. **Clean and rebuild**:
+```bash
+cd ..
+zopen-build -v --clean
+zopen-build -v
+```
 
 Common fixes:
 - missing configure: set `ZOPEN_BOOTSTRAP` or `ZOPEN_CONFIGURE="skip"`
@@ -110,6 +168,20 @@ Common fixes:
 - **Missing symbols in `.so`**: Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` or patch headers with `__attribute__((visibility("default")))`.
 - **Read-only `/usr/local` errors**: Use `ZOPEN_EXTRA_MAKE_OPTS` to override install paths (e.g., `export ZOPEN_EXTRA_MAKE_OPTS="INSTALL_LIB_DIR=\${ZOPEN_INSTALL_DIR}/lib"`).
 - **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
+- **u_int*_t typedef conflicts**: Add `#ifndef __MVS__` guards around `u_int8_t`, `u_int16_t`, `u_int64_t` typedefs (z/OS uses standard `uint*_t` types).
+- **Missing symbols in `.so` (CRITICAL for extensions)**: 
+  1. Add `-fvisibility=default` to `ZOPEN_EXTRA_CFLAGS` in `buildenv`
+  2. Patch header files: change `#define API_MACRO` to `#define API_MACRO __attribute__((visibility("default")))` for non-Windows platforms
+  3. For template headers (`.h.tmpl`), add platform check: `#ifndef _WIN32 ... #else ... __attribute__((visibility("default"))) ... #endif`
+- **Read-only `/usr/local` errors**: 
+  1. Use `ZOPEN_EXTRA_MAKE_OPTS` to override install paths: `export ZOPEN_EXTRA_MAKE_OPTS="INSTALL_LIB_DIR=\${ZOPEN_INSTALL_DIR}/lib INSTALL_INCLUDE_DIR=\${ZOPEN_INSTALL_DIR}/include"`
+  2. Set `ZOPEN_INSTALL_OPTS="install \${ZOPEN_EXTRA_MAKE_OPTS}"` to ensure overrides are passed to `make install`
+  3. Patch Makefile to use `?=` instead of `=` for install directory variables (e.g., `INSTALL_LIB_DIR ?= /usr/local/lib`)
+- **Big Endian issues**: Check for bit-packing or binary format assumptions. Disable `mmap` if byte-swapping is needed in memory.
+- **posix_memalign missing declaration**: Ensure `#define _XOPEN_SOURCE 600` is at the VERY TOP of the C file, before any includes.
+- **thread_local support**: z/OS Clang may not support `thread_local`. Use thread-specific storage or remove if safe.
+- **poll() conflicts**: `#define __poll 1` in `poll.h` can conflict with variables named `__poll`. `#undef __poll` after including `<poll.h>` on z/OS.
+
 
 ### 5. Finalize After Success
 
@@ -128,6 +200,11 @@ bump --help
 bump current buildenv
 bump check buildenv
 ```
+**CRITICAL for bump configuration**:
+- Ensure version variable (e.g., `USEARCH_VERSION`) is defined BEFORE `ZOPEN_STABLE_URL` references it
+- **Use git repository URL pattern** for GitHub projects: `https://github.com/org/project.git|*` (NOT the releases page URL `https://github.com/org/project/releases|semver:*`, which fails with "no version found" error)
+- Follow existing port examples like `gitport` for correct bump pattern syntax
+
 5. Add source-dir ignore pattern to `.gitignore`:
 ```bash
 echo "" >> .gitignore
