@@ -95,9 +95,14 @@ Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
 - **CRITICAL: `ZOPEN_STABLE_URL` must point to actual release tarball** (e.g., `https://github.com/org/project/releases/download/vX.Y.Z/project-X.Y.Z.tar.gz`), **NOT GitHub API endpoints** (e.g., `https://api.github.com/repos/org/project/tarball/vX.Y.Z`). API endpoints return different archive formats that may cause extraction issues.
+- **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) in `--stable-url` rather than a tarball URL. This is appropriate for projects that require git history or submodules.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
+<<<<<<< skill-update/zos-porting-cli/20260323-123933
+- **For CMake projects**: Always reference existing working examples like `github.com/zopencommunity/llamacppport/blob/main/buildenv` before starting.
+=======
 - **Dependency Home Variables**: `zopen-build` automatically provides the root directory of each dependency as an environment variable named `<DEPNAME>_HOME` (e.g., `BLIS_HOME`, `ZOSLIB_HOME`). Reference these in `buildenv` as `\${DEPNAME_HOME}` to ensure they are evaluated correctly during the build process.
 - **For CMake projects**: Always reference existing working examples like `llamacppport` or `stablediffusionport` before starting.
+>>>>>>> main
 - **CMake configure pattern**: Use "." at end of `ZOPEN_CONFIGURE_OPTS` to specify source directory.
 - **For header-only CMake libraries**: 
   - Use `ZOPEN_MAKE="skip"` since no compilation is needed
@@ -183,6 +188,7 @@ Common fixes:
 - **thread_local support**: z/OS Clang may not support `thread_local`. Use thread-specific storage or remove if safe.
 - **poll() conflicts**: `#define __poll 1` in `poll.h` can conflict with variables named `__poll`. `#undef __poll` after including `<poll.h>` on z/OS.
 
+
 ### 5. Finalize After Success
 
 1. Create patch from extracted source tree:
@@ -202,7 +208,8 @@ bump check buildenv
 ```
 **CRITICAL for bump configuration**:
 - Ensure version variable (e.g., `USEARCH_VERSION`) is defined BEFORE `ZOPEN_STABLE_URL` references it
-- The bump pattern for GitHub releases should use the releases page URL (e.g., `https://github.com/org/project/releases`), not a specific tag URL
+- **Use git repository URL pattern** for GitHub projects: `https://github.com/org/project.git|*` (NOT the releases page URL `https://github.com/org/project/releases|semver:*`, which fails with "no version found" error)
+- Follow existing port examples like `gitport` for correct bump pattern syntax
 
 5. Add source-dir ignore pattern to `.gitignore`:
 ```bash
