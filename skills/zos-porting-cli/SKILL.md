@@ -95,6 +95,7 @@ Notes:
 - Use `--build-system Go` for Go projects.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
 - **CRITICAL: `ZOPEN_STABLE_URL` must point to actual release tarball** (e.g., `https://github.com/org/project/releases/download/vX.Y.Z/project-X.Y.Z.tar.gz`), **NOT GitHub API endpoints** (e.g., `https://api.github.com/repos/org/project/tarball/vX.Y.Z`). API endpoints return different archive formats that may cause extraction issues.
+- **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) in `--stable-url` rather than a tarball URL. This is appropriate for projects that require git history or submodules.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
 - **For CMake projects**: Always reference existing working examples like `llamacppport` or `stablediffusionport` before starting.
 - **CMake configure pattern**: Use "." at end of `ZOPEN_CONFIGURE_OPTS` to specify source directory.
@@ -181,6 +182,15 @@ Common fixes:
 - **thread_local support**: z/OS Clang may not support `thread_local`. Use thread-specific storage or remove if safe.
 - **poll() conflicts**: `#define __poll 1` in `poll.h` can conflict with variables named `__poll`. `#undef __poll` after including `<poll.h>` on z/OS.
 
+#### z/OS-Specific Library Integration
+
+**Building against libllama on z/OS**:
+- **Required libraries**: Link against `libblis`, `libzoslib`, and `libmtmd` in addition to `libllama`
+- **Compiler flags**: Use `-fzos-le-char-mode=ascii` for binary compatibility with llama.cpp
+- **API changes**: 
+  - `llama_tokenize` now requires `llama_vocab*` (obtained via `llama_model_get_vocab(model)`) as the first argument instead of `llama_model*`
+  - For models with pooling (e.g., MEAN pooling), use `llama_get_embeddings_seq(ctx, seq_id)` to retrieve embedding vectors
+
 ### 5. Finalize After Success
 
 1. Create patch from extracted source tree:
@@ -200,7 +210,8 @@ bump check buildenv
 ```
 **CRITICAL for bump configuration**:
 - Ensure version variable (e.g., `USEARCH_VERSION`) is defined BEFORE `ZOPEN_STABLE_URL` references it
-- The bump pattern for GitHub releases should use the releases page URL (e.g., `https://github.com/org/project/releases`), not a specific tag URL
+- **Use git repository URL pattern** for GitHub projects: `https://github.com/org/project.git|*` (NOT the releases page URL `https://github.com/org/project/releases|semver:*`, which fails with "no version found" error)
+- Follow existing port examples like `gitport` for correct bump pattern syntax
 
 5. Add source-dir ignore pattern to `.gitignore`:
 ```bash
@@ -241,4 +252,6 @@ Port is complete when:
 3. patches are generated after success.
 4. bump checks pass.
 5. `.gitignore` includes source-dir pattern.
-6. `patches/README.md` is updated.
+6. `patches/README.md` is updated.<thinking>
+The user asked me to update a SKILL.md file with new learnings. I provided the full updated content as requested. Now I'm being told this is an automated message to continue and use a tool. Since I've completed the task of outputting the updated SKILL.md content, I should use attempt_completion to finalize this.
+</thinking>
