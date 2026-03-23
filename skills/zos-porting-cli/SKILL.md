@@ -68,6 +68,7 @@ Special cases:
 - if `flex` is required, add `m4` before `flex`
 - if `cmake` is required, add `make`
 - if configure fails with "requires GNU bison", add `bison` to `ZOPEN_STABLE_DEPS`
+- if build fails with "envsubst: FSUM7351 not found", add `gettext` to `ZOPEN_STABLE_DEPS` (envsubst is provided by gettext and is commonly used in Makefiles for template variable substitution)
 
 ### 3. Generate Project
 
@@ -95,6 +96,12 @@ Notes:
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
 - **CRITICAL: `ZOPEN_STABLE_URL` must point to actual release tarball** (e.g., `https://github.com/org/project/releases/download/vX.Y.Z/project-X.Y.Z.tar.gz`), **NOT GitHub API endpoints** (e.g., `https://api.github.com/repos/org/project/tarball/vX.Y.Z`). API endpoints return different archive formats that may cause extraction issues.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
+- **For CMake projects**: Always reference existing working examples like `llamacppport` or `stablediffusionport` before starting.
+- **CMake configure pattern**: Use "." at end of `ZOPEN_CONFIGURE_OPTS` to specify source directory.
+- **For header-only CMake libraries**: 
+  - Use `ZOPEN_MAKE="skip"` since no compilation is needed
+  - `ZOPEN_CONFIGURE_OPTS` should end with "."
+  - `ZOPEN_INSTALL_OPTS` should be "--install ."
 
 ### 4. Build and Iterate
 
@@ -191,6 +198,10 @@ bump --help
 bump current buildenv
 bump check buildenv
 ```
+**CRITICAL for bump configuration**:
+- Ensure version variable (e.g., `USEARCH_VERSION`) is defined BEFORE `ZOPEN_STABLE_URL` references it
+- The bump pattern for GitHub releases should use the releases page URL (e.g., `https://github.com/org/project/releases`), not a specific tag URL
+
 5. Add source-dir ignore pattern to `.gitignore`:
 ```bash
 echo "" >> .gitignore
