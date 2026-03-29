@@ -33,6 +33,12 @@ zopen-version || zopen-version --help
 
 If a command reports `Source the zopen-config prior to running ...`, source zopen config first.
 
+## MCP Integration
+
+**For porting issues, leverage the `zos-porting-rag` MCP server** which provides access to 600+ z/OS porting patches and documentation. 
+
+**Setup**: See [zos-porting-rag repository](https://github.com/ZOSOpenTools/zos-porting-rag) for MCP server configuration.
+
 ## Workflow
 
 ### 1. Collect Metadata
