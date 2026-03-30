@@ -94,11 +94,14 @@ zopen-generate \
 
 Notes:
 - Use `--build-system Go` for Go projects.
+- **Use `--build-system Python` for Python packages** (e.g., pytest, pip packages). Python packages require pip-based installation, not GNU Make.
 - Keep upstream source URLs (`--stable-url`, `--dev-url`) as `https://` URLs.
 - **Sanitize `buildenv` variables**: Ensure all custom variables use underscores instead of hyphens (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`).
 - **For git-based ports**: Specify the HTTPS git URL (e.g., `https://github.com/org/project.git`) rather than a tarball URL unless absolutely necessary. This is appropriate for projects that require git history or submodules.
 - **CRITICAL: Sanitize `buildenv` variables**: Shell variables CANNOT contain hyphens. Always use underscores (e.g., `SQLITE_VEC_VERSION`, not `SQLITE-VEC_VERSION`). This will cause immediate build failures.
-- **For CMake projects**: Always reference existing working examples like `github.com/zopencommunity/llamacppport/blob/main/buildenv` before starting.
+- **For CMake projects**: 
+  - Always reference existing working examples like `github.com/zopencommunity/llamacppport/blob/main/buildenv` before starting.
+  - Use `ZOPEN_CLEAN="rm"` and `ZOPEN_CLEAN_OPTS="-rf build"` in `buildenv` to ensure a clean build when running `zopen-build -v -c`.
 - **Dependency Home Variables**: `zopen-build` automatically provides the root directory of each dependency as an environment variable named `<DEPNAME>_HOME` (e.g., `BLIS_HOME`, `ZOSLIB_HOME`). Reference these in `buildenv` as `\${DEPNAME_HOME}` to ensure they are evaluated correctly during the build process.
 
 ### 4. Build and Iterate
