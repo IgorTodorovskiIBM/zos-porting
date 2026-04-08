@@ -57,9 +57,9 @@ Use:
 - `zopen-generate --list-categories`
 - `zopen-generate --list-build-systems`
 
-## Python Porting Fallbacks
+## Python Porting
 
-For Python projects, use this dependency/source order:
+### Metadata Sources (in order)
 
 1. `pyproject.toml`
 2. `setup.py` or `setup.cfg`
@@ -73,7 +73,62 @@ Rules:
 - Distinguish build requirements from runtime requirements.
 - If the package uses `pyproject.toml`, inspect the build backend first
   (e.g. setuptools, hatchling, poetry-core, meson-python, maturin).
-- If native extensions are present, separately identify C/C++/Rust/system dependencies.
+- `python -m build --wheel` handles all project types (pyproject.toml, setup.py, setup.cfg) — no need for separate code paths.
+
+### C Extensions Detection
+
+Check for `.c` files in the project source tree. If present:
+- Add `--c-extensions` flag to `zopen-generate` — this omits `ZOPEN_COMP="skip"` so the C compiler is available during the build.
+- The compiler variables (CC, CFLAGS, LDFLAGS) are exported as environment variables by `zopen-build` and Python's build system (setuptools, etc.) picks them up automatically.
+- `ZOPEN_MAKE_MINIMAL="yes"` is set for all Python ports — this keeps compiler flags in the environment rather than passing them as make arguments (which would break Python builds).
+
+If no C extensions:
+- `ZOPEN_COMP="skip"` is set (default for Python ports without `--c-extensions`).
+
+### Generate Command
+
+Pure Python:
+```bash
+zopen-generate \
+  --name <name> \
+  --description "<description>" \
+  --categories "<cat1 cat2>" \
+  --license <spdx_or_unknown> \
+  --type BUILD \
+  --build-system Python \
+  --stable-url "<url>" \
+  --stable-deps "check_python <other_deps>" \
+  --build-line stable \
+  --runtime-deps "check_python" \
+  --non-interactive
+```
+
+Python with C extensions:
+```bash
+zopen-generate \
+  --name <name> \
+  --description "<description>" \
+  --categories "<cat1 cat2>" \
+  --license <spdx_or_unknown> \
+  --type BUILD \
+  --build-system Python \
+  --c-extensions \
+  --stable-url "<url>" \
+  --stable-deps "check_python <other_deps>" \
+  --build-line stable \
+  --runtime-deps "check_python" \
+  --non-interactive
+```
+
+### Build Workflow
+
+The generated `buildenv` for Python uses:
+- `zopen_custom_build()` — creates a venv, installs `setuptools build installer wheel`, runs `python -m build --wheel`
+- `zopen_custom_check()` — runs `pytest -v` inside the venv
+- `zopen_custom_install()` — installs the wheel into `$ZOPEN_INSTALL_DIR/lib/python` and symlinks scripts from `lib/python/bin/` into `bin/`
+- `zopen_append_to_env()` — adds `$ZOPEN_INSTALL_DIR/lib/python` to `PYTHONPATH`
+- `zopen_check_results()` — parses pytest output (`X passed, Y failed, Z error`) into the `actualFailures`/`totalTests`/`expectedFailures` format
+
 
 
 ### 2. Map Dependencies (Strict)
