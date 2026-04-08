@@ -56,7 +56,25 @@ Use:
 - `zopen-generate --list-licenses`
 - `zopen-generate --list-categories`
 - `zopen-generate --list-build-systems`
-- `https://formulae.brew.sh/api/formula/${PROJECT}.json`
+
+## Python Porting Fallbacks
+
+For Python projects, use this dependency/source order:
+
+1. `pyproject.toml`
+2. `setup.py` or `setup.cfg`
+3. PyPI metadata
+4. upstream docs / README
+5. Homebrew formula metadata if available - `https://formulae.brew.sh/api/formula/${PROJECT}.json`
+
+Rules:
+- Prefer upstream Python packaging metadata over Brew.
+- Use `check_python` for Python dependency mapping, not `python`.
+- Distinguish build requirements from runtime requirements.
+- If the package uses `pyproject.toml`, inspect the build backend first
+  (e.g. setuptools, hatchling, poetry-core, meson-python, maturin).
+- If native extensions are present, separately identify C/C++/Rust/system dependencies.
+
 
 ### 2. Map Dependencies (Strict)
 
