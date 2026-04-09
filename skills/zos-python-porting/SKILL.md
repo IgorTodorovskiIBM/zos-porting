@@ -122,12 +122,91 @@ zopen-generate \
 
 ### Build Workflow
 
-The generated `buildenv` for Python uses:
-- `zopen_custom_build()` — creates a venv, installs `setuptools build installer wheel`, runs `python -m build --wheel`
-- `zopen_custom_check()` — runs `pytest -v` inside the venv
-- `zopen_custom_install()` — installs the wheel into `$ZOPEN_INSTALL_DIR/lib/python` and symlinks scripts from `lib/python/bin/` into `bin/`
-- `zopen_append_to_env()` — adds `$ZOPEN_INSTALL_DIR/lib/python` to `PYTHONPATH`
-- `zopen_check_results()` — parses pytest output (`X passed, Y failed, Z error`) into the `actualFailures`/`totalTests`/`expectedFailures` format
+The generated `buildenv` sets `ZOPEN_BUILD_SYSTEM="Python"`. All build logic is handled **natively by `zopen-build`** — no custom functions needed in the buildenv.
+
+`zopen-build` automatically:
+- Creates a venv, installs `setuptools build installer wheel`
+- Runs `python -m build --wheel`
+- Runs `pytest -v` for testing (installs wheel with `--force-reinstall` first)
+- Installs the wheel into `$ZOPEN_INSTALL_DIR/lib/python` and symlinks scripts into `bin/`
+- Preserves the `.whl` file in `$ZOPEN_INSTALL_DIR/dist/` for publishing
+- Sets up `PYTHONPATH` in `.env`
+- Merges `LIBS` into `LDFLAGS` for C extension ports (Python's build system ignores `LIBS`)
+- Parses pytest output for `zopen_check_results`
+- Adds `check_python` and `grep` as implicit dependencies
+
+### Overriding Defaults
+
+If a project needs custom behavior (e.g., a different test runner), define the function in `buildenv` and it takes precedence over the built-in. For example, pycryptodome uses its own test suite:
+
+```sh
+zopen_custom_check() {
+  . .venv/bin/activate
+  pip install --force-reinstall --no-deps dist/*.whl
+  pip install pycryptodome-test-vectors==1.0.22
+  python -m Crypto.SelfTest
+  zopen_check_result=$?
+  deactivate
+  return "${zopen_check_result}"
+}
+
+zopen_check_results() {
+  dir="$1"; pfx="$2"; chk="$1/$2_check.log"
+  totalTests=$(grep -oE "Ran [0-9]+ tests" "${chk}" | awk '{print $2}')
+  totalTests=${totalTests:-0}
+  if grep -q "^OK$" "${chk}"; then
+    actualFailures=0
+  else
+    actualFailures=$(grep -oE "failures=[0-9]+" "${chk}" | cut -d= -f2)
+    actualFailures=${actualFailures:-1}
+  fi
+  echo "actualFailures:${actualFailures}"
+  echo "totalTests:${totalTests}"
+  echo "expectedFailures:0"
+}
+```
+
+Also set `ZOPEN_MAKE="zopen_custom_check"` and `ZOPEN_CHECK="zopen_custom_check"` in buildenv to use custom functions instead of built-ins.
+
+### Publishing
+
+#### GitHub (pax)
+Standard `zopen-publish` for pax files (same as any port):
+```bash
+zopen-publish -f \
+  -p install/<name>.pax.Z \
+  -m metadata.json \
+  -g <TAG> \
+  -t <github_token>
+```
+
+#### Pulp PyPI (wheel)
+Publish the preserved wheel from `$ZOPEN_INSTALL_DIR/dist/` to a Pulp PyPI repository:
+```bash
+zopen-publish \
+  --whl <name>port/install/<name>/dist/<name>-<version>-*.whl \
+  --pulp-url http://<host>:<port>/pypi/<repo>/ \
+  --pulp-password <password>
+```
+
+Environment variables `PULP_URL`, `PULP_USER`, `PULP_PASSWORD` can be used instead of flags.
+
+#### Both at once
+```bash
+zopen-publish -f \
+  -p install/<name>.pax.Z \
+  -m metadata.json \
+  -g <TAG> \
+  -t <github_token> \
+  --whl install/<name>/dist/*.whl \
+  --pulp-url http://<host>:<port>/pypi/<repo>/ \
+  --pulp-password <password>
+```
+
+Consumers install from Pulp with:
+```bash
+pip install --index-url http://<host>:<port>/pypi/<repo>/simple/ <package>
+```
 
 
 
