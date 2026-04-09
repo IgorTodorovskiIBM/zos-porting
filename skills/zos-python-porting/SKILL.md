@@ -1,6 +1,6 @@
 ---
 name: zos-porting-cli
-description: Load before starting any z/OS porting work. Contains required procedures, known gotchas, and build patterns for zopen ports. It provides a command-first workflow for metadata collection, dependency mapping to exact zopen package names, project generation, build/fix iteration, patch creation, bump validation, and optional repo/CI setup.
+description: Load before starting any z/OS python porting work. Contains required procedures, known gotchas, and build patterns for zopen ports. It provides a command-first workflow for metadata collection, dependency mapping to exact zopen package names, project generation, build/fix iteration, patch creation, bump validation, and optional repo/CI setup.
 ---
 
 # z/OS Porting
