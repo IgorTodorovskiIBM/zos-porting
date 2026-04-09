@@ -81,6 +81,7 @@ Check for `.c` files in the project source tree. If present:
 - Add `--c-extensions` flag to `zopen-generate` — this omits `ZOPEN_COMP="skip"` so the C compiler is available during the build.
 - The compiler variables (CC, CFLAGS, LDFLAGS) are exported as environment variables by `zopen-build` and Python's build system (setuptools, etc.) picks them up automatically.
 - `ZOPEN_MAKE_MINIMAL="yes"` is set for all Python ports — this keeps compiler flags in the environment rather than passing them as make arguments (which would break Python builds).
+- **C extensions compile successfully on z/OS with `-fvisibility=default` flag in `ZOPEN_EXTRA_CFLAGS`.** Modern Python packages often don't need additional symbol visibility patches - the compiler flag is usually sufficient for all extensions to work correctly.
 
 If no C extensions:
 - `ZOPEN_COMP="skip"` is set (default for Python ports without `--c-extensions`).
@@ -207,6 +208,13 @@ Consumers install from Pulp with:
 ```bash
 pip install --index-url http://<host>:<port>/pypi/<repo>/simple/ <package>
 ```
+
+### Testing Python Packages
+
+**Python packages with built-in test runners (e.g., `python -m Crypto.SelfTest`) often work better than pytest on z/OS.** Always check for native test runners before forcing pytest, especially when encountering test class compatibility issues. If the package provides its own test runner:
+1. Check the package documentation or README for test instructions
+2. Modify `zopen_custom_check()` in `buildenv` to use the native test runner instead of pytest
+3. Update `zopen_check_results()` to parse the native test runner's output format
 
 
 
