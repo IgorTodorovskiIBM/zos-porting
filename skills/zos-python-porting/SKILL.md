@@ -351,6 +351,7 @@ Common fixes:
 - **posix_memalign missing declaration**: Ensure `#define _XOPEN_SOURCE 600` is at the VERY TOP of the C file, before any includes.
 - **thread_local support**: z/OS Clang may not support `thread_local`. Use thread-specific storage or remove if safe.
 - **poll() conflicts**: `#define __poll 1` in `poll.h` can conflict with variables named `__poll`. `#undef __poll` after including `<poll.h>` on z/OS.
+- Some Python packages (e.g., psutil) check `sys.platform` but lack z/OS support. Patch the pyton script to add z/OS handling similar to existing platforms like AIX. Add `elif sys.platform.startswith('zos'):` cases with appropriate z/OS configuration.
 
 
 ### 5. Finalize After Success
