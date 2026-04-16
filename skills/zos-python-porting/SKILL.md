@@ -46,7 +46,7 @@ If a command reports `Source the zopen-config prior to running ...`, source zope
 Gather:
 - project name (lowercase)
 - one-line description
-- repo URL
+- repo URL (prefer the Git clone repository location over an archive file)
 - SPDX license
 - categories
 - build system
@@ -97,8 +97,10 @@ zopen-generate \
   --license <spdx_or_unknown> \
   --type BUILD \
   --build-system Python \
-  --stable-url "<url>" \
+  --stable-url "<Git clone url or Archive url>" \
   --stable-deps "check_python <other_deps>" \
+  --dev-url "<Git clone url or Archive url>" \
+  --dev-deps "check_python <other_deps>" \
   --build-line stable \
   --runtime-deps "check_python" \
   --non-interactive
@@ -114,8 +116,10 @@ zopen-generate \
   --type BUILD \
   --build-system Python \
   --c-extensions \
-  --stable-url "<url>" \
+  --stable-url "<Git clone url or Archive url>" \
   --stable-deps "check_python <other_deps>" \
+  --dev-url "<Git clone url or Archive url>" \
+  --dev-deps "check_python <other_deps>" \
   --build-line stable \
   --runtime-deps "check_python" \
   --non-interactive
