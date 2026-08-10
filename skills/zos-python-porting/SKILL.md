@@ -1,6 +1,6 @@
 ---
 name: zos-python-porting
-description: Load before porting Python packages to z/OS with zopen. Covers pyproject/setup metadata, check_python dependency mapping, C-extension detection, --c-extensions generation, wheel build/check behavior, pytest import shadowing, native test runners, test-result parsing with a >90% success gate, wheel publishing, repository creation, and CI pipeline creation.
+description: Load before porting Python packages to z/OS with zopen. Covers pyproject/setup metadata, check_python dependency mapping, C-extension detection, --c-extensions generation, wheel build/check behavior across the 3.12/3.13/3.14 interpreter matrix, the zopen_python_test hook, pytest import shadowing, native test runners, test-result parsing that sums across interpreters, prebuilt Rust wheels via BARE ports, z/OS shell and encoding traps, wheel publishing, repository creation, and CI pipeline creation.
 ---
 
 # z/OS Python Porting
@@ -19,7 +19,7 @@ Use this skill for end-to-end Python package porting work with local `zopen-*` c
 
 ## CRITICAL: Continuous Skill Improvement
 
-**If the user provides a course correction, tip, or alternative approach that successfully resolves an issue, you MUST update this `SKILL.md` file in the `https://github.com/IgorTodorovskiIBM/zos-porting` repository.** This ensures the skill evolves and prevents future agents from repeating the same mistakes. Treat this as a core mandate of the porting workflow.
+**If the user provides a course correction, tip, or alternative approach that successfully resolves an issue, you MUST update this `SKILL.md` file in the `https://github.com/zopencommunity/ai-porting` repository.** This ensures the skill evolves and prevents future agents from repeating the same mistakes. Treat this as a core mandate of the porting workflow.
 
 ## Preflight
 
@@ -65,43 +65,90 @@ Use:
 
 ### Rust Extensions Without a Native z/OS Toolchain
 
-Some Python packages are Rust extensions (pydantic-core, rpds-py, watchfiles, etc.).
-There is **no native Rust toolchain for z/OS**. These packages cannot be built by
-`ZOPEN_BUILD_SYSTEM=Python` on z/OS directly.
+Some Python packages are Rust extensions (pydantic-core, rpds-py, watchfiles).
+There is **no native Rust toolchain for z/OS**, so they cannot be compiled by
+`ZOPEN_BUILD_SYSTEM=Python` on-platform.
 
-**Solution**: Cross-compile the `.so` on Linux-on-Power (LoP) using IBM's Rust
-cross-compiler targeting `s390x-ibm-zos`, package it as a wheel, then use the
-zopen port only to download and verify the prebuilt wheel.
+**Before building cross-compile infrastructure, check whether you need the
+package at all.** Its only consumer may accept a pure-Python alternative — e.g.
+`fastapi<=0.125.0` accepts `pydantic>=1.7.4,<3.0.0`, and pydantic v1 is pure
+Python, so pinning it removes the Rust dependency entirely (`fastapi>=0.130.0`
+requires pydantic v2 and therefore pydantic-core). Resolve the full closure
+first and confirm how much is genuinely impure: for both fastapi and fastmcp,
+**pydantic-core is the only non-pure package** out of ~13.
 
-**Pattern** (`buildenv` structure):
+**You cannot repackage one `.so` across interpreters.** pydantic-core's ABI tag
+is `cp312`, not `abi3`: it is compiled against CPython 3.12's private ABI, whose
+struct layouts change between minor versions. Renaming it to `cpython-313.so`
+yields something 3.13 loads and then corrupts memory in. Upstream ships 14
+wheels *per interpreter* for this reason, and `Cargo.toml` does not enable
+PyO3's `abi3` feature. Cross-compile once per interpreter, or ship one and pin
+`ZOPEN_PYTHON_VERSIONS`.
+
+**Solution**: cross-compile on Linux-on-Power using IBM's Rust cross-compiler
+targeting `s390x-ibm-zos` (`cross/build_zos_wheel.py` in
+`github.ibm.com/compiler/rust-scripts`), attach the wheels as release assets on
+the port repo, and let the port download and verify them.
+
+Use `ZOPEN_TYPE="BARE"`, as `fdport` does. Requirements that are easy to miss:
+
+- **`ZOPEN_STABLE_URL` is still required.** `checkEnv` exempts only
+  `ZOPEN_TYPE=LOCAL`; a BARE port without one fails with `Building from stable,
+  but ZOPEN_STABLE_URL not specified` before doing anything. Nothing is fetched
+  from it — `getCode` returns early for BARE — so it records which upstream
+  source the binary was built from.
+- **Supply `zopen_append_to_env` yourself.** The `PYTHONPATH` snippet is only
+  auto-generated for `ZOPEN_BUILD_SYSTEM="Python"` ports. Without it the module
+  installs and is not importable, and install validation fails.
+- **Stage to `$ZOPEN_ROOT/install/dist/`**, never `$ZOPEN_INSTALL_DIR/dist/`.
+- **`chtag -b` the wheel.** It is a zip; tagging it as text invites conversion.
+- **Derive the interpreter tag from Python, not by parsing `--version`:**
+  `python3 -c 'import sys; print("%d%d" % sys.version_info[:2])'`. z/OS grep has
+  no `-o`, and IBM's banner puts the version in a different field from upstream
+  CPython's.
+- **Upload wheels under their native name**
+  (`pkg-1.0-cp312-cp312-os390_29_00_8561.whl`) and let the port retag them.
+  Renaming to `-none-any` by hand leaves the internal `WHEEL` metadata still
+  declaring the original platform tag, which is malformed per PEP 427 — and it
+  will not self-heal, because retagging treats a `-none-any` name with a `cp*`
+  tag as already done.
+- **Strip the binary** before packaging. An unstripped pydantic-core `.so` is
+  ~43 MB against ~2 MB on Linux, in every wheel, pax and install.
+
+If keeping `ZOPEN_BUILD_SYSTEM="Python"` so the wheels reach the wheel index and
+get imported per interpreter, the stand-in for the build must also **create a
+venv per interpreter** — the check phase runs in them, and a `ZOPEN_MAKE` that
+only fills `dist/` fails with `No virtual environment at .venv-3.13`:
+
 ```sh
-# Fetch prebuilt wheel from GitHub release asset in zopen_init
-zopen_init() {
-  mkdir -p dist
+zopen_custom_build() {
+  _zopen_python_verify_interpreters || return 1
+  rm -rf dist; mkdir -p dist || return 1
   for _pv in $(_zopen_python_versions); do
-    _wheel="<pkg>-<ver>-${_pv}-none-any.whl"
-    curl -fLo "dist/${_wheel}" \
-      "https://github.com/zopencommunity/<pkg>port/releases/download/v<ver>/${_wheel}"
+    _zopen_python_ensure_venv_for "${_pv}" || return 1
+    cp "wheels/pkg-${VER}-cp$(echo "${_pv}" | tr -d '.')-"*.whl dist/ || { deactivate; return 1; }
+    deactivate
   done
+  _zopen_python_ensure_venv_for "$(_zopen_python_primary_version)" || return 1
+  _zopen_python_retag_wheel
+  _rc=$?; deactivate; return ${_rc}
 }
-# Replace compile step with a no-op that confirms wheels are present
-zopen_verify_wheels() {
-  for _pv in $(_zopen_python_versions); do
-    _wheel="<pkg>-<ver>-${_pv}-none-any.whl"
-    [ -f "dist/${_wheel}" ] || { echo "FAIL: missing dist/${_wheel}"; return 1; }
-  done
-}
-export ZOPEN_MAKE="zopen_verify_wheels"
-export ZOPEN_PYTHON_WHEEL_RETAG=false   # wheels are pre-retagged
 ```
 
-Key points:
-- `ZOPEN_BUILD_SYSTEM="Python"` still used so wheels land in the zopen wheel index
-- `ZOPEN_PYTHON_WHEEL_RETAG=false` because wheels arrive already tagged `cpXY-none-any`
-- Wheels are built with `cross/build_zos_wheel.py` in `github.ibm.com/compiler/rust-scripts`
-- `ZOPEN_MAKE="zopen_verify_wheels"` — shell function name works because `command -v` finds functions
-- Upload one wheel per Python version as release assets on the port repo
-- Use `--only-binary <pkg>` in all `pip install` calls to prevent pip from fetching the Rust sdist
+Then `zopen_python_test` imports the extension on each interpreter — the only
+thing that shows an off-platform build actually works on this one.
+
+**Consumers** need the zopen index and must be stopped from falling back to the
+sdist:
+
+```sh
+pip install --extra-index-url https://repo.zopen.community/pypi/wheels/simple/ \
+            --only-binary <rust-pkg>  <package>
+```
+
+`--only-binary` is load-bearing: with both indexes visible pip takes the highest
+version, so a newer release on PyPI is fetched as an sdist and fails to compile.
+Note `zopen-build` configures **no** pip index by default.
 
 ### Decision Checklist
 
@@ -192,48 +239,118 @@ zopen-generate \
 The generated `buildenv` sets `ZOPEN_BUILD_SYSTEM="Python"`. All build logic is handled **natively by `zopen-build`** — no custom functions needed in the buildenv.
 
 `zopen-build` automatically:
-- Creates a venv, installs `setuptools build installer wheel`
+- Builds, tests and publishes **one wheel per Python interpreter** (see below)
+- Creates a venv per interpreter, installs `setuptools build installer wheel`
 - Runs `python -m build --wheel`
-- Runs `pytest -v` for testing (installs wheel with `--force-reinstall` first)
-- Installs the wheel into `$ZOPEN_INSTALL_DIR/lib/python` and symlinks scripts into `bin/`
-- Preserves the `.whl` file in `$ZOPEN_INSTALL_DIR/dist/` for publishing
+- Runs `pytest -v` for testing (installs that interpreter's wheel with `--force-reinstall` first)
+- Retags compiled wheels to `cp3XY-none-any`
+- Installs the primary interpreter's wheel into `$ZOPEN_INSTALL_DIR/lib/python` and symlinks scripts into `bin/`
+- Copies every wheel to **`$ZOPEN_ROOT/install/dist/`** for publishing
 - Sets up `PYTHONPATH` in `.env`
 - Merges `LIBS` into `LDFLAGS` for C extension ports (Python's build system ignores `LIBS`)
 - Parses pytest output for `zopen_check_results`
 - Adds `check_python` and `grep` as implicit dependencies
 
-### Overriding Defaults
+**Wheels go to `$ZOPEN_ROOT/install/dist/`, not `$ZOPEN_INSTALL_DIR/dist/`.**
+`ZOPEN_INSTALL_DIR` is the tree that gets packaged: a wheel there ships a second
+copy of everything already under `lib/python`, and CI never finds it, because
+the staging step globs `install/dist/*.whl` relative to the port directory. A
+port that stages to the wrong one builds green and silently publishes nothing.
 
-If a project needs custom behavior (e.g., a different test runner), define the function in `buildenv` and it takes precedence over the built-in. For example, pycryptodome uses its own test suite:
+### The interpreter matrix
+
+`ZOPEN_PYTHON_VERSIONS` defaults to `"3.12 3.13 3.14"`, narrowed at startup to
+whichever are actually installed. A version named **explicitly** must be present
+or the build fails before compiling; a **defaulted** one that is missing is
+skipped with a log line. Interpreters are located through
+`ZOPEN_PYTHON_<major>_<minor>` (exported by `check_python`), then
+`python<version>` on PATH, then `python3`/`python` if either reports that
+version.
+
+Consequences for every Python port:
+
+- A compiled extension produces one wheel per interpreter, e.g.
+  `pkg-1.0-cp312-none-any.whl` and `pkg-1.0-cp313-none-any.whl`.
+- A pure Python wheel is built once and shared, but still tested on each.
+- **Never glob `dist/*.whl`** — that hands pip every version's wheel at once and
+  it refuses with `is not a supported wheel on this platform`.
+- **Never hardcode `.venv`** — that is only the primary interpreter's
+  environment, so the others go untested.
+- `zopen_check_results` sees every interpreter's output in **one** log and must
+  sum across runs (see below).
+
+To opt out — for instance when only one prebuilt wheel exists — set it
+explicitly:
 
 ```sh
-zopen_custom_check() {
-  . .venv/bin/activate
-  pip install --force-reinstall --no-deps dist/*.whl
-  pip install pycryptodome-test-vectors==1.0.22
-  python -m Crypto.SelfTest
-  zopen_check_result=$?
-  deactivate
-  return "${zopen_check_result}"
-}
+export ZOPEN_PYTHON_VERSIONS="3.12"
+```
 
-zopen_check_results() {
-  dir="$1"; pfx="$2"; chk="$1/$2_check.log"
-  totalTests=$(grep -oE "Ran [0-9]+ tests" "${chk}" | awk '{print $2}')
-  totalTests=${totalTests:-0}
-  if grep -q "^OK$" "${chk}"; then
-    actualFailures=0
-  else
-    actualFailures=$(grep -oE "failures=[0-9]+" "${chk}" | cut -d= -f2)
-    actualFailures=${actualFailures:-1}
-  fi
-  echo "actualFailures:${actualFailures}"
-  echo "totalTests:${totalTests}"
-  echo "expectedFailures:0"
+### Overriding Defaults
+
+**To change how tests are run, define `zopen_python_test`. Do not override
+`ZOPEN_CHECK`.**
+
+`zopen_python_test` is called once per interpreter, with that interpreter's
+virtual environment already active and the wheel built for it already
+installed. So `python` and `pip` are the right ones, and `dist/` never has to be
+inspected. Supply only the command:
+
+```sh
+zopen_python_test() {
+  pip install pycryptodome-test-vectors==1.0.22 || return $?
+  python -m Crypto.SelfTest
 }
 ```
 
-Also set `ZOPEN_MAKE="zopen_custom_check"` and `ZOPEN_CHECK="zopen_custom_check"` in buildenv to use custom functions instead of built-ins.
+Overriding `ZOPEN_CHECK` replaces the **whole loop over interpreters**, not just
+the test command. Every port that has done so re-implemented it wrongly in the
+same two ways — activating `.venv` (pinning to the primary) and installing
+`dist/*.whl` (handing pip every version's wheel). Reach for it only when you
+genuinely need to replace the loop itself.
+
+If tests must run outside the source tree — common for C and Rust extensions,
+where a source directory of the same name shadows the installed package — do
+that inside the hook:
+
+```sh
+zopen_python_test() {
+  test_dir="/tmp/${ZOPEN_PROJECT_NAME}_chk_$$"
+  rm -rf "${test_dir}"; mkdir -p "${test_dir}" || return $?
+  cp -R tests "${test_dir}/" || return $?
+  (cd "${test_dir}" && python -m pytest tests/ -v)   # subshell: never leave the build elsewhere
+  rc=$?
+  rm -rf "${test_dir}"
+  return ${rc}
+}
+```
+
+Copy `tests` as a **subdirectory**, not its contents, if fixtures use paths like
+`Path("tests/files/x")`.
+
+**Never set `ZOPEN_MAKE` to a check function.** A real port did
+`export ZOPEN_MAKE="zopen_custom_check"` and its build step ran the test
+function — sourcing a `.venv` that does not exist yet and installing from a
+`dist/` that has not been built. If the build genuinely needs replacing, write a
+separate function.
+
+**Dependencies are not bundled.** `zopen-build` installs the port's own wheel
+with `--no-deps`, and the generated `.env` adds only that port's `lib/python` to
+`PYTHONPATH`. A package with runtime dependencies ships a pax that cannot
+import. Install the closure explicitly:
+
+```sh
+zopen_post_install() {
+  pip install --disable-pip-version-check --no-warn-script-location --no-deps \
+    --target "${ZOPEN_INSTALL_DIR}/lib/python" \
+    <dep> <dep> ... || return $?
+}
+```
+
+Dependencies needed only by the tests belong in `zopen_python_test` instead, so
+each interpreter's environment gets its own copy. Installing them from
+`zopen_pre_check` does not work: that hook runs **once**, before any interpreter
+is chosen, so it can only ever equip the primary.
 
 **CRITICAL: When customizing Python test execution:**
 - Keep pytest invocation verbose (`-v`) to preserve full check log output
@@ -242,6 +359,64 @@ Also set `ZOPEN_MAKE="zopen_custom_check"` and `ZOPEN_CHECK="zopen_custom_check"
 - Stable log formatting makes CI diagnosis and result extraction reliable
 - Always provide a matching `zopen_check_results` parser for custom check flows so zopen-build records accurate totals
 - Do not continue to finalization, publishing, repo creation, or CI creation unless parsed test success is greater than 90%
+
+### Writing `zopen_check_results` correctly
+
+Every interpreter writes to **one** check log, so a parser that reads a single
+result reports a fraction of the suite and, worse, lets a passing interpreter
+hide a failing one. Four mistakes, all found in shipped ports:
+
+**1. Reading the last result instead of summing.**
+
+```sh
+# WRONG - reports one interpreter's count as the whole suite
+totalTests=$(grep -oE "Ran [0-9]+ test" "${chk}" | tail -1 | grep -oE "[0-9]+")
+# RIGHT
+totalTests=$(grep -oE "Ran [0-9]+ test" "${chk}" | awk '{s+=$2} END {print s+0}')
+```
+
+**2. Treating any `OK` as success.**
+
+```sh
+# WRONG - one passing interpreter zeroes another's failures
+if grep -qE "^OK" "${chk}"; then actualFailures=0; fi
+```
+
+Sum `failures=` and `errors=` instead.
+
+**3. Counting unittest's expected failures as failures.** A `@expectedFailure`
+test that fails as designed is a pass, and unittest reports it on the *success*
+line — `OK (skipped=2056, expected failures=5)`. A bare `failures=` match picks
+up the `failures=5` inside it, once per interpreter. Django reported 15 failures
+for a fully passing run this way. Strip it first:
+
+```sh
+actualFailures=$(sed 's/expected failures=[0-9][0-9]*//g' "${chk}" \
+  | grep -oE "(failures|errors)=[0-9]+" | cut -d= -f2 | awk '{s+=$1} END {print s+0}')
+```
+
+**4. `grep -c ... || echo 0`.** `grep -c` prints `0` **and exits 1** when nothing
+matches, so the fallback appends a second zero and the arithmetic dies with
+`FSUM9224 bad number "0\n0"`. This fires on **clean** runs, because a clean run
+has no `FAIL:` lines. It is not a z/OS limitation — GNU grep is identical, so
+adding `grep` as a dependency does not help.
+
+```sh
+# WRONG
+passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null || echo 0)
+# RIGHT
+passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null); passed=${passed:-0}
+```
+
+**Also count an interpreter that produced no output.** A wheel that fails to
+import kills its run before any counts are printed, which otherwise reads as
+success — exactly the failure that matters most for a cross-compiled extension:
+
+```sh
+runs=$(grep -c "SMOKE_TOTAL=" "${chk}"); runs=${runs:-0}
+interpreters=$(grep -c "Running tests with Python" "${chk}"); interpreters=${interpreters:-0}
+[ "${runs}" -lt "${interpreters}" ] && actualFailures=$((actualFailures + interpreters - runs))
+```
 
 ### Publishing
 
@@ -256,10 +431,10 @@ zopen-publish -f \
 ```
 
 #### Pulp PyPI (wheel)
-Publish the preserved wheel from `$ZOPEN_INSTALL_DIR/dist/` to a Pulp PyPI repository:
+Publish the preserved wheel from `$ZOPEN_ROOT/install/dist/` to a Pulp PyPI repository:
 ```bash
 zopen-publish \
-  --whl <name>port/install/<name>/dist/<name>-<version>-*.whl \
+  --whl <name>port/install/dist/<name>-<version>-*.whl \
   --pulp-url http://<host>:<port>/pypi/<repo>/ \
   --pulp-password <password>
 ```
@@ -273,7 +448,7 @@ zopen-publish -f \
   -m metadata.json \
   -g <TAG> \
   -t <github_token> \
-  --whl install/<name>/dist/*.whl \
+  --whl install/dist/*.whl \
   --pulp-url http://<host>:<port>/pypi/<repo>/ \
   --pulp-password <password>
 ```
@@ -287,7 +462,7 @@ pip install --index-url http://<host>:<port>/pypi/<repo>/simple/ <package>
 
 **Python packages with built-in test runners (e.g., `python -m Crypto.SelfTest`) often work better than pytest on z/OS.** Always check for native test runners before forcing pytest, especially when encountering test class compatibility issues. If the package provides its own test runner:
 1. Check the package documentation or README for test instructions
-2. Modify `zopen_custom_check()` in `buildenv` to use the native test runner instead of pytest
+2. Define `zopen_python_test()` in `buildenv` to run the native test runner instead of pytest (not `zopen_custom_check` with `ZOPEN_CHECK`, which also replaces the loop over interpreters)
 3. Update `zopen_check_results()` to parse the native test runner's output format
 
 ### Test Processing and Success Gate
@@ -314,33 +489,36 @@ For Python C-extension ports, if pytest in zopen-build imports the source tree i
 
 1. **Before changing test logic**, inspect the newest `*_check.log` to confirm whether failures come from test execution or import-path shadowing
 2. A pattern like "collected tests" followed by `ModuleNotFoundError` for `package._extension` usually means pytest is running from the source tree and not exercising the installed wheel
-3. **Define `zopen_custom_check`** to:
-   - Install `dist/*.whl` into `.venv` with `pip install --force-reinstall --no-deps`
-   - Copy only the test suite to a temporary directory outside the source tree (e.g., under `/tmp`)
-   - Run pytest from that temporary directory so imports resolve to the installed package
+3. **Define `zopen_python_test`** to copy the test suite to a temporary
+   directory outside the source tree and run pytest there, so imports resolve
+   to the installed package. Do **not** define `zopen_custom_check` and
+   override `ZOPEN_CHECK`: zopen-build already activates the right virtual
+   environment and installs that interpreter's wheel before calling the hook,
+   and replacing `ZOPEN_CHECK` discards the loop over interpreters as well.
 4. **Provide matching `zopen_check_results`** parser to extract passed/failed/error counts from the pytest summary line
 
 Example for ports with bundled or generated tests:
 ```sh
-zopen_custom_check() {
-  . .venv/bin/activate
-  pip install --force-reinstall --no-deps dist/*.whl
-  
-  # Copy tests to temporary directory outside source tree
-  test_dir="/tmp/${ZOPEN_PKGNAME}_tests_$$"
-  mkdir -p "${test_dir}"
-  cp -r tests/* "${test_dir}/"
-  
-  cd "${test_dir}"
-  pytest -v
-  zopen_check_result=$?
-  
-  cd -
+zopen_python_test() {
+  # Copy tests outside the source tree, where the source package would
+  # otherwise shadow the installed wheel.
+  test_dir="/tmp/${ZOPEN_PROJECT_NAME}_tests_$$"
   rm -rf "${test_dir}"
-  deactivate
+  mkdir -p "${test_dir}" || return $?
+  cp -R tests/* "${test_dir}/" || return $?
+
+  # Subshell, so a failure cannot leave the build in the temp directory.
+  (cd "${test_dir}" && python -m pytest -v)
+  zopen_check_result=$?
+
+  rm -rf "${test_dir}"
   return "${zopen_check_result}"
 }
 ```
+
+Copy `tests` as a subdirectory rather than its contents if the suite uses
+CWD-relative fixtures such as `Path("tests/files/x")`, and avoid the substring
+`tests` in the temp directory name if any test asserts on `os.getcwd()`.
 
 This approach:
 - Validates the packaged extension exactly as CI/install will use it
@@ -603,6 +781,69 @@ git status --short
 ```
 
 The working tree should contain only intentional port files before push. Never push extracted source directories created by `zopen-build`.
+
+## z/OS Shell and Environment Traps
+
+These are not theoretical; each one shipped in a real port or pipeline.
+
+**z/OS `find` has no `-path`.** It rejects the expression entirely
+(`FSUM6372`). With `2>/dev/null` the search silently matches nothing. This made
+a CI step report "produced no wheel" for a wheel it had just built.
+
+**z/OS `grep` has no `-o`/`-oE`** (`FSUMA930`).
+
+**GNU tools are not reliably on PATH.** zopen ships them in
+`/data/zopen/usr/local/altbin`, which is on PATH on *some* build agents and not
+others — so the same code passes on one agent and fails on another. Crucially:
+dependency `.env`s are sourced **inside** `zopen-build`, so a declared tool
+(e.g. `grep`) is available to buildenv functions; code running **outside**
+`zopen-build`, such as a Jenkins shell step, gets whatever `/bin` provides.
+Adding a dependency does not help there. Prefer POSIX constructs, or a shell
+glob over `find`.
+
+**`zopen-build` is `#!/bin/sh`.** No `[[ ]]`, `local`, `read -d`, or process
+substitution in anything it sources.
+
+**Unbalanced `)` inside `$( )` breaks the parser** (`FSUM7332`), even when
+quoted — `$(... | sed 's/)//')` fails. Balanced parens are fine.
+
+**File encoding.** Files may be tagged ASCII (`ISO8859-1`) or untagged EBCDIC,
+and this differs per machine even for the same file. Sourcing a tagged ASCII
+file from a non-interactive `ssh` shell fails with a syntax error unless
+`_BPXK_AUTOCVT=ON` is set — that is not corruption, do not "fix" the file.
+When rewriting one, preserve its original encoding and tag: convert with the
+host's own `iconv` and restore the tag with `chtag`. Use `chtag -b` for
+binaries; a wheel is a zip.
+
+**IBM's Python version banner differs from upstream.**
+`python3 --version` prints `IBM Open Enterprise SDK for Python 3.12.13`, so the
+version is the **last** field, not the second. Taking field two yields `Open`
+and the build fails with `The version string "Open" uses an invalid version
+format`. Better still, ask Python:
+`python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'`.
+
+**Python 3.14 changed the platform tag** from `os390_<release>_<model>` to
+`zos`, and moved from `/usr/lpp/IBM/cyp/v3rNN` to `/usr/lpp/IBM/python/v3r14`.
+Anything matching `os390*` or assuming the `cyp` prefix misses 3.14.
+
+**Compiled output is not reproducible.** The z/OS binder stamps build date and
+time into the program object, so an unchanged source rebuild yields a different
+`.so`. `SOURCE_DATE_EPOCH` does not reach it — it controls zip entry mtimes,
+not the binder. Expect every rebuild of a compiled port to differ.
+
+**Republishing an existing version.** `zopen-publish` refuses to replace a
+published wheel. Pass `--on-conflict build-tag` and it compares the two by
+content — identical contents report as already published, a real difference is
+reuploaded under the next PEP 427 build tag (`pkg-1.0-1-cp312-none-any.whl`),
+which pip prefers. Nothing in the index is ever overwritten.
+
+**Do not fabricate the version.** The port template ships
+`zopen_get_version() { echo "1.0.0" ... }`. Leaving it means `.version`,
+`metadata.json` and the RPM name are all wrong. Echo the version variable
+declared at the top of the buildenv. Equally, if a `# bump:` line updates a
+version variable, make sure `ZOPEN_STABLE_TAG` uses it
+(`"v${PKG_VERSION}"`) — a hardcoded tag drifts, and the port then builds one
+version while reporting another.
 
 ## Completion Criteria
 
