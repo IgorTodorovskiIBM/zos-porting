@@ -114,6 +114,66 @@ Use `ZOPEN_TYPE="BARE"`, as `fdport` does. Requirements that are easy to miss:
   tag as already done.
 - **Strip the binary** before packaging. An unstripped pydantic-core `.so` is
   ~43 MB against ~2 MB on Linux, in every wheel, pax and install.
+- **Set the execute bit inside the zip.** Python's `zipfile` writes mode `0600`
+  unless told otherwise, so the `.so` installs `-rw-------` and never loads.
+  Build the entry with `ZipInfo.external_attr = (0o755 << 16)`. `chmod` after
+  install is not a fix — the next `pip install` restores the bad mode.
+
+#### Diagnosing a wheel that installs but will not import
+
+Three distinct failures produce near-identical z/OS messages, and two of the
+messages point at the wrong thing. Work through them in this order.
+
+**`CEE3512S ... EF076015` is usually the execute bit, not a load error.** The
+text reads like the loader could not resolve the module, so the instinct is to
+go looking for missing symbols. Check `ls -l` on the installed `.so` first.
+
+**`CEE3561S <symbol> was not found` is a version skew, not a missing port.**
+`__zoslib_free` not being found does not mean zoslib is absent; it means the
+`.so` was linked against a newer zoslib than the runtime host has (4.0.5 vs
+4.0.4). Link zoslib **statically** (`libzoslib.a`, `libzoslib-supp.a`) — zopen
+ships archives, and a cross-compiled wheel cannot assume anything about the
+target's runtime library versions. The same reasoning applies to OpenSSL: zopen
+ships only `.a`, so it links statically whether or not you intended it to.
+
+**A DLL name that does not match the filename.** GOFF records the internal DLL
+name at link time from the output filename, and the loader uses that name, not
+the file's. Rename a `.so` after linking and it keeps asking for the old name —
+a wheel shipping `libcryptography_rust.so` failed because it was linked as
+`lib_rust.so`. Link with the final name; never rename afterwards. Confirm the
+recorded name rather than trusting the filename.
+
+#### Dependencies the interpreter already bundles
+
+`zopen-build` installs the wheel with `--no-deps` into an **isolated** venv, so
+anything the package needs at import time must be installed or visible. The
+z/OS interpreters bundle several packages that PyPI would normally supply —
+`cffi` (1.17.1 on 3.12, 2.0.0 on 3.13 and 3.14) and an old `cryptography`
+3.3.2 among them — and the isolated venv hides all of them:
+
+```
+ModuleNotFoundError: No module named '_cffi_backend'
+```
+
+pip cannot fill the gap: `cffi`'s sdist needs libffi headers that are not on
+z/OS, and the build dies on a missing `/usr/include/ffi`. A port that installs
+a prebuilt wheel should therefore create its venvs itself with
+`--system-site-packages` instead of calling `_zopen_python_ensure_venv_for`.
+That helper is right for a port compiling from source and wrong here.
+
+**Doing so creates a trap that will otherwise report a false pass.** With
+system packages visible, the interpreter's own copy of the package is
+importable too, so a wheel that failed to install leaves the test importing the
+bundled version and printing `OK`. Assert the version the port ships:
+
+```sh
+python -c "import cryptography, sys; sys.exit(cryptography.__version__ != '${VERSION}')"
+```
+
+Check what the interpreters actually bundle before assuming a dependency is
+missing — a package can be present at a version below the declared floor and
+still work, as 3.12's cffi 1.17.1 does against a `cffi>=2.0.0` requirement.
+Verify on-platform rather than trusting either the floor or its absence.
 
 If keeping `ZOPEN_BUILD_SYSTEM="Python"` so the wheels reach the wheel index and
 get imported per interpreter, the stand-in for the build must also **create a
@@ -825,6 +885,13 @@ format`. Better still, ask Python:
 **Python 3.14 changed the platform tag** from `os390_<release>_<model>` to
 `zos`, and moved from `/usr/lpp/IBM/cyp/v3rNN` to `/usr/lpp/IBM/python/v3r14`.
 Anything matching `os390*` or assuming the `cyp` prefix misses 3.14.
+
+A cross-compiler is likely to stamp `os390_29_00_8561` on every wheel it
+builds, including the cp314 one, and 3.14's pip rejects that tag as
+incompatible — the wheel is uninstallable under its own name. Retagging to
+`cp314-none-any` fixes it, so this is not blocking for a port that retags, and
+the release asset needs no renaming. Confirm the retag rewrote the internal
+`WHEEL` metadata and `RECORD`, not just the filename.
 
 **Compiled output is not reproducible.** The z/OS binder stamps build date and
 time into the program object, so an unchanged source rebuild yields a different
